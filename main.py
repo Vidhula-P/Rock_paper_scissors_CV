@@ -1,115 +1,76 @@
+import camera
 import network
-import socket
 import time
-from machine import Pin, ADC
+import socket
 
 # Network credentials - replace with your details
-SSID = "YOUR_WIFI_SSID"
-PASSWORD = "YOUR_WIFI_PASSWORD"
+SSID = "Vidhula- Hotspot"
+PASSWORD = "blueberry"
 PORT = 80
 
-def connect_wifi():
-    # Initialize WiFi in station mode
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    
-    if not wlan.isconnected():
-        print('Connecting to WiFi...')
-        wlan.connect(SSID, PASSWORD)
-        
-        # Wait for connection with timeout
-        max_wait = 10
-        while max_wait > 0:
-            if wlan.isconnected():
-                break
-            max_wait -= 1
-            print('Waiting for connection...')
-            time.sleep(1)
-    
-    if wlan.isconnected():
-        print('WiFi connected')
-        print('Network config:', wlan.ifconfig())
-    else:
-        print('WiFi connection failed')
-        return False
-    return True
+CAMERA_PARAMETERS = {
+    "data_pins": [15, 17, 18, 16, 14, 12, 11, 48],
+    "vsync_pin": 38,
+    "href_pin": 47,
+    "sda_pin": 40,
+    "scl_pin": 39,
+    "pclk_pin": 13,
+    "xclk_pin": 10,
+    "xclk_freq": 20000000,
+    "powerdown_pin": -1,
+    "reset_pin": -1,
+    "frame_size": camera.FrameSize.R96X96,  # Use camera.FrameSize
+    "pixel_format": camera.PixelFormat.GRAYSCALE  # Use camera.PixelFormat
+}
 
-def setup_webserver():
-    # Create socket
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(('', PORT))
+cam = camera.Camera(**CAMERA_PARAMETERS)
+cam.init()
+cam.set_bmp_out(True)# this will produced uncompressed images which we need for preprocessing
+    
+frame = cam.capture()
+
+if frame:
+    print("Captured frame successfully! Length:", len(frame))
+else:
+    print("Failed to capture frame.")
+
+ssid = "Vidhula- Hotspot"
+password = "blueberry"
+
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+wlan.connect(ssid, password)
+
+print("Connecting to WiFi...")
+while not wlan.isconnected():
+    time.sleep(1)
+
+print("Connected! IP Address:", wlan.ifconfig()[0])
+
+
+def serve_frame():
+    addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
+    s = socket.socket()
+    s.bind(addr)
     s.listen(5)
-    print('Listening on port', PORT)
-    return s
+    print("Web server running...")
 
-def create_html_response():
-    html = """
-    <!DOCTYPE html>
-    <html>
-        <head>
-            <title>ESP32-S3 Stream</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-        </head>
-        <body>
-            <h1>ESP32-S3 Data Stream</h1>
-            <div id="data">Waiting for data...</div>
-            <script>
-                var eventSource = new EventSource('/stream');
-                eventSource.onmessage = function(event) {
-                    document.getElementById('data').innerHTML = event.data;
-                };
-            </script>
-        </body>
-    </html>
-    """
-    return html
-
-def main():
-    # Connect to WiFi
-    if not connect_wifi():
-        return
-    
-    # Setup web server
-    s = setup_webserver()
-    
-    # Example sensor setup (ADC on pin A0)
-    adc = ADC(Pin(1))  # Use appropriate pin number for your setup
-    
     while True:
-        try:
-            # Accept client connection
-            conn, addr = s.accept()
-            print('Client connected from', addr)
-            request = conn.recv(1024).decode()
-            
-            if 'GET /stream' in request:
-                # Handle SSE stream
-                conn.send('HTTP/1.1 200 OK\r\n')
-                conn.send('Content-Type: text/event-stream\r\n')
-                conn.send('Cache-Control: no-cache\r\n')
-                conn.send('Connection: keep-alive\r\n\r\n')
-                
-                while True:
-                    # Read sensor data
-                    sensor_value = adc.read_u16()
-                    
-                    # Send data in SSE format
-                    data = f'data: {{"value": {sensor_value}}}\n\n'
-                    conn.send(data)
-                    time.sleep(1)
-                    
-            else:
-                # Serve main page
-                response = create_html_response()
-                conn.send('HTTP/1.1 200 OK\r\n')
-                conn.send('Content-Type: text/html\r\n')
-                conn.send('Connection: close\r\n\n')
-                conn.send(response)
-                conn.close()
-                
-        except Exception as e:
-            print('Error:', e)
-            conn.close()
+        conn, addr = s.accept()
+        print("Client connected from", addr)
+        frame = cam.capture()
 
-if __name__ == '__main__':
-    main()
+        if frame:
+            response = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: image/bmp\r\n"
+                "Content-Length: {}\r\n"
+                "\r\n".format(len(frame))
+            )
+            conn.send(response.encode() + frame)
+        else:
+            conn.send(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")
+        
+        conn.close()
+
+serve_frame()
