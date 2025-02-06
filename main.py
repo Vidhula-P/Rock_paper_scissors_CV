@@ -48,7 +48,8 @@ while not wlan.isconnected():
 print("Connected! IP Address:", wlan.ifconfig()[0])
 
 
-def serve_frame():
+# Serve video stream
+def serve_stream():
     addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
     s = socket.socket()
     s.bind(addr)
@@ -58,19 +59,26 @@ def serve_frame():
     while True:
         conn, addr = s.accept()
         print("Client connected from", addr)
-        frame = cam.capture()
+        conn.send(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n"
+        )
 
-        if frame:
-            response = (
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: image/bmp\r\n"
-                "Content-Length: {}\r\n"
-                "\r\n".format(len(frame))
-            )
-            conn.send(response.encode() + frame)
-        else:
-            conn.send(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")
-        
-        conn.close()
+        try:
+            while True:
+                frame = cam.capture()
+                if frame:
+                    conn.send(
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" +
+                        frame + b"\r\n"
+                    )
+                time.sleep(0.05)  # Adjust delay to balance performance
+        except Exception as e:
+            print("Client disconnected:", e)
+        finally:
+            conn.close()
 
-serve_frame()
+serve_stream()
+
