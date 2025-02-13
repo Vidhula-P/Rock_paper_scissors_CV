@@ -1,9 +1,16 @@
-from machine import Pin, I2C
-from time import sleep
 import camera
+import network
+import time
+import socket
 import os
+from machine import Pin
+import uos
 
-"""Initialize the camera module"""
+# Network credentials - replace with your details
+SSID = "Vidhula- Hotspot"
+PASSWORD = "blueberry"
+PORT = 80
+
 CAMERA_PARAMETERS = {
     "data_pins": [15, 17, 18, 16, 14, 12, 11, 48],
     "vsync_pin": 38,
@@ -18,14 +25,23 @@ CAMERA_PARAMETERS = {
     "frame_size": camera.FrameSize.R96X96,  # Use camera.FrameSize
     "pixel_format": camera.PixelFormat.GRAYSCALE  # Use camera.PixelFormat
 }
-try:
-    cam = camera.Camera(**CAMERA_PARAMETERS)
-    cam.init()
-    cam.set_bmp_out(True)# this will produced uncompressed images which we need for preprocessing
-    print("Camera initialized successfully")
-except Exception as e:
-    print("Error initializing camera:", e)
 
+cam = camera.Camera(**CAMERA_PARAMETERS)
+cam.init()
+cam.set_bmp_out(True)  # This will produce uncompressed images which we need for preprocessing
+
+# Wi-Fi connection
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+wlan.connect(SSID, PASSWORD)
+
+print("Connecting to WiFi...")
+while not wlan.isconnected():
+    time.sleep(1)
+
+print("Connected! IP Address:", wlan.ifconfig()[0])
+
+# Create folders for storing labeled images
 def create_directories():
     """Create directories for each class if they don't exist"""
     classes = ['rock', 'paper', 'scissors']
@@ -34,59 +50,58 @@ def create_directories():
             os.mkdir('/' + class_name)
         except:
             pass  # Directory already exists
-
-def capture_single_image(class_name):
-    """Capture a single image for the specified class"""
-    try:
-        # Get the number of existing files in the class directory
-        existing_files = os.listdir('/' + class_name)
-        image_count = len([f for f in existing_files if f.endswith('.jpg')])
         
-        # Capture image
-        print("Capturing in 5 seconds...")
-        sleep(5)  # Give time to prepare gesture
+create_directories()
+
+def save_image(label):
+    # Capture the frame
+    frame = cam.capture()
+    if frame:
+        # Generate filename based on label and timestamp
+        filename = "/{}/img_{}.bmp".format(label, time.ticks_ms())
         
-        buf = cam.capture()
-        if buf:
-            # Save image with incrementing filename
-            filename = f"/{class_name}/{class_name}_{image_count:03d}.jpg"
-            with open(filename, 'wb') as f:
-                f.write(buf)
-            print(f"Saved {filename}")
-            return True
-        else:
-            print("Failed to capture image")
-            return False
-    except Exception as e:
-        print("Error capturing image:", e)
-        return False
+        # Save the image to the appropriate folder
+        with open(filename, "wb") as f:
+            f.write(frame)
+        print(f"Image saved as {filename}")
+    else:
+        print("Failed to capture image.")
 
-def main():
-    """Main function to capture a single image"""
-    print("Rock-Paper-Scissors Image Capture")
-    
-    create_directories()
-    
-    # Ask for the class
-    print("\nSelect gesture class:")
-    print("1: Rock")
-    print("2: Paper")
-    print("3: Scissors")
-    
-    try:
-        choice = input("Enter choice (1-3): ")
-        class_map = {'1': 'rock', '2': 'paper', '3': 'scissors'}
-        if choice in class_map:
-            class_name = class_map[choice]
-            capture_single_image(class_name)
-        else:
-            print("Invalid choice!")
-    except Exception as e:
-        print("Error:", e)
-    
-    cam.deinit()
+def serve_stream():
+    addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
+    s = socket.socket()
+    s.bind(addr)
+    s.listen(5)
+    print("Web server running...")
 
-if __name__ == "__main__":
-    main()
+    while True:
+        conn, addr = s.accept()
+        print("Client connected from", addr)
 
+        # Serve HTML page with buttons to select labels
+        html = """
+        <html>
+        <body>
+        <h1>Select Label</h1>
+        <form method="POST" action="/capture">
+        <button name="label" value="rock">Rock</button>
+        <button name="label" value="paper">Paper</button>
+        <button name="label" value="scissors">Scissors</button>
+        </form>
+        </body>
+        </html>
+        """
+        conn.send(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n")
+        conn.send(html.encode())
+
+        # Check if there's a form submission (button click)
+        data = conn.recv(1024).decode()
+        if "label=" in data:
+            label = data.split("label=")[1].split(" ")[0]
+            if label in ["rock", "paper", "scissors"]:
+                save_image(label)  # Save the image to the corresponding folder
+
+        conn.close()
+
+serve_stream()
 
