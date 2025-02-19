@@ -1,16 +1,10 @@
-import camera
 import network
-import time
+import camera
 import socket
+import time
 import os
-from machine import Pin
-import uos
 
-# Network credentials - replace with your details
-SSID = "Vidhula- Hotspot"
-PASSWORD = "blueberry"
-PORT = 80
-
+# Initialize camera
 CAMERA_PARAMETERS = {
     "data_pins": [15, 17, 18, 16, 14, 12, 11, 48],
     "vsync_pin": 38,
@@ -22,86 +16,89 @@ CAMERA_PARAMETERS = {
     "xclk_freq": 20000000,
     "powerdown_pin": -1,
     "reset_pin": -1,
-    "frame_size": camera.FrameSize.R96X96,  # Use camera.FrameSize
-    "pixel_format": camera.PixelFormat.GRAYSCALE  # Use camera.PixelFormat
+    "frame_size": camera.FrameSize.R96X96,
+    "pixel_format": camera.PixelFormat.GRAYSCALE
 }
 
 cam = camera.Camera(**CAMERA_PARAMETERS)
 cam.init()
-cam.set_bmp_out(True)  # This will produce uncompressed images which we need for preprocessing
+cam.set_bmp_out(True)
 
-# Wi-Fi connection
-wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
-wlan.connect(SSID, PASSWORD)
+# Set up access point
+ssid = "ESP32-Cam"
+password = "12345678"
+ap = network.WLAN(network.AP_IF)
+ap.active(True)
+ap.config(essid=ssid, password=password)
 
-print("Connecting to WiFi...")
-while not wlan.isconnected():
-    time.sleep(1)
+print(f"Access point started. Connect to '{ssid}' with password '{password}'")
+print(f"AP IP address: {ap.ifconfig()[0]}")
 
-print("Connected! IP Address:", wlan.ifconfig()[0])
+# Create folder if it doesn't exist
+folder_name = "paper"
+try:
+    os.mkdir(folder_name)
+except OSError:
+    pass
 
-# Create folders for storing labeled images
-def create_directories():
-    """Create directories for each class if they don't exist"""
-    classes = ['rock', 'paper', 'scissors']
-    for class_name in classes:
-        try:
-            os.mkdir('/' + class_name)
-        except:
-            pass  # Directory already exists
-        
-create_directories()
-
-def save_image(label):
-    # Capture the frame
-    frame = cam.capture()
-    if frame:
-        # Generate filename based on label and timestamp
-        filename = "/{}/img_{}.bmp".format(label, time.ticks_ms())
-        
-        # Save the image to the appropriate folder
-        with open(filename, "wb") as f:
-            f.write(frame)
-        print(f"Image saved as {filename}")
-    else:
-        print("Failed to capture image.")
-
-def serve_stream():
-    addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
-    s = socket.socket()
+# Start web server
+def start_server():
+    addr = ('0.0.0.0', 5000)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(addr)
     s.listen(5)
-    print("Web server running...")
+    print("Web server listening on port 5000")
 
+    count = 98
     while True:
+        # Capture image every 4 seconds
+        img = cam.capture()
+        if img:
+            # Save image in paper folder
+            filename = f"{folder_name}/paper{count}.pgm"
+            with open(filename, 'wb') as f:
+                f.write(img)
+            print(f"Saved image as {filename}")
+            count += 1
+
+        time.sleep(2)
+
         conn, addr = s.accept()
-        print("Client connected from", addr)
+        request = conn.recv(1024)
+        request = str(request)
 
-        # Serve HTML page with buttons to select labels
-        html = """
-        <html>
-        <body>
-        <h1>Select Label</h1>
-        <form method="POST" action="/capture">
-        <button name="label" value="rock">Rock</button>
-        <button name="label" value="paper">Paper</button>
-        <button name="label" value="scissors">Scissors</button>
-        </form>
-        </body>
-        </html>
-        """
-        conn.send(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n")
-        conn.send(html.encode())
+        if "GET / " in request:
+            # Generate HTTP response with image
+            response = "HTTP/1.1 200 OK\r\n"
+            response += "Content-Type: image/bmp\r\n"
+            response += f"Content-Length: {len(img)}\r\n\r\n"
+            conn.send(response.encode('utf-8') + img)
+        else:
+            # Serve basic HTML page
+            html = """
+            HTTP/1.1 200 OK
+Content-Type: text/html
 
-        # Check if there's a form submission (button click)
-        data = conn.recv(1024).decode()
-        if "label=" in data:
-            label = data.split("label=")[1].split(" ")[0]
-            if label in ["rock", "paper", "scissors"]:
-                save_image(label)  # Save the image to the corresponding folder
 
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>ESP32 Camera Preview</title>
+            </head>
+            <body>
+                <h2>ESP32 Camera Preview</h2>
+                <img src="/" style="width:100%; max-width:400px;" />
+                <script>
+                    setInterval(() => {
+                        document.querySelector('img').src = '/' + Math.random();
+                    }, 1000);
+                </script>
+            </body>
+            </html>
+            """
+            conn.send(html.encode('utf-8'))
         conn.close()
 
-serve_stream()
-
+start_server()
